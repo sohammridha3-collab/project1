@@ -2,7 +2,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from enum import Enum
-from typing import List, Optional
+from typing import List
 
 import joblib
 import numpy as np
@@ -22,24 +22,11 @@ logger = logging.getLogger("mental_health_api")
 # Model path configuration
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_FILE = os.path.join(PROJECT_DIR, "Mental_Health_Model.pkl")
-INDEX_FILE = os.path.join(PROJECT_DIR, "index (1).html")
-STYLE_FILE = os.path.join(PROJECT_DIR, "style (1).css")
-SCRIPT_FILE = os.path.join(PROJECT_DIR, "script (1).js")
+INDEX_FILE = os.path.join(PROJECT_DIR, "index.html")
+STYLE_FILE = os.path.join(PROJECT_DIR, "style.css")
+SCRIPT_FILE = os.path.join(PROJECT_DIR, "script.js")
 model = None
-
-# Top 10 countries as extracted during model training
-TOP_COUNTRIES = {
-    "Other",
-    "India",
-    "USA",
-    "Canada",
-    "Australia",
-    "UK",
-    "Germany",
-    "Mexico",
-    "Turkey",
-    "France",
-}
+MODEL_CATEGORIES = {}
 
 
 @asynccontextmanager
@@ -49,7 +36,12 @@ async def lifespan(app: FastAPI):
     if os.path.exists(MODEL_FILE):
         try:
             logger.info(f"Loading model from {MODEL_FILE}...")
-            model = joblib.load(MODEL_FILE)
+            loaded_model = joblib.load(MODEL_FILE)
+            categories = get_model_categories(loaded_model)
+            validate_model_categories(categories)
+            model = loaded_model
+            MODEL_CATEGORIES.clear()
+            MODEL_CATEGORIES.update(categories)
             logger.info("Model loaded successfully.")
         except Exception as e:
             logger.error(f"Failed to load model file: {e}")
@@ -72,10 +64,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Enable CORS for frontend clients
+local_frontend_origins = [
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+]
+production_frontend_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if "*" in production_frontend_origins:
+    raise ValueError("CORS_ALLOWED_ORIGINS must list explicit origins, not '*'.")
+
+# Enable CORS for the local frontend and explicitly configured production clients.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=local_frontend_origins + production_frontend_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -86,7 +90,6 @@ app.add_middleware(
 class GenderEnum(str, Enum):
     male = "Male"
     female = "Female"
-    other = "Other"
 
 
 class AcademicLevelEnum(str, Enum):
@@ -105,7 +108,9 @@ class PlatformEnum(str, Enum):
     youtube = "YouTube"
     twitter = "Twitter"
     vkontakte = "VKontakte"
-    other = "Other"
+    kakaotalk = "KakaoTalk"
+    line = "LINE"
+    wechat = "WeChat"
 
 
 class PurposeOfUseEnum(str, Enum):
@@ -122,46 +127,99 @@ class StressLevelEnum(str, Enum):
     very_high = "Very High"
 
 
+def get_model_categories(loaded_model) -> dict[str, list[str]]:
+    """Read categorical values from the fitted encoders in the trained pipeline."""
+    categories = {}
+
+    def collect(estimator, columns=None):
+        encoded_categories = getattr(estimator, "categories_", None)
+        if encoded_categories is not None and columns is not None:
+            categories.update(
+                {
+                    str(column): [str(value) for value in values]
+                    for column, values in zip(columns, encoded_categories)
+                }
+            )
+
+        for _, transformer, transformer_columns in getattr(estimator, "transformers_", []):
+            if isinstance(transformer_columns, str):
+                input_columns = [transformer_columns]
+            elif transformer_columns is None:
+                input_columns = columns
+            else:
+                input_columns = list(transformer_columns)
+                if input_columns and all(isinstance(column, int) for column in input_columns):
+                    input_columns = [columns[column] for column in input_columns]
+            collect(transformer, input_columns)
+
+        for step in getattr(estimator, "named_steps", {}).values():
+            collect(step, columns)
+
+    collect(loaded_model, list(getattr(loaded_model, "feature_names_in_", [])))
+    return categories
+
+
+def validate_model_categories(categories: dict[str, list[str]]) -> None:
+    """Fail model loading if validation enums no longer match the fitted encoders."""
+    enums = {
+        "Stress_Level": StressLevelEnum,
+        "Gender": GenderEnum,
+        "Academic_Level": AcademicLevelEnum,
+        "Most_Used_Platform": PlatformEnum,
+        "Purpose_Of_Use": PurposeOfUseEnum,
+    }
+    mismatches = {
+        feature: {
+            "model": sorted(categories.get(feature, [])),
+            "api": sorted(value.value for value in enum_type),
+        }
+        for feature, enum_type in enums.items()
+        if set(categories.get(feature, [])) != {value.value for value in enum_type}
+    }
+    if mismatches:
+        raise ValueError(f"API category validation does not match model encoders: {mismatches}")
+
+
 # --- Pydantic Data Schemas ---
 class StudentInput(BaseModel):
-    Age: int = Field(..., ge=10, le=100, description="Age of the student (years)", example=21)
-    Gender: GenderEnum = Field(..., description="Gender identity", example=GenderEnum.male)
+    Age: int = Field(..., ge=10, le=100, description="Age of the student (years)", examples=[21])
+    Gender: GenderEnum = Field(..., description="Gender identity", examples=[GenderEnum.male])
     Country: str = Field(
         default="Other",
         description="Country of residence (automatically grouped to top countries or 'Other')",
-        example="Canada",
+        examples=["Canada"],
     )
     Academic_Level: AcademicLevelEnum = Field(
-        ..., description="Current educational stage", example=AcademicLevelEnum.undergraduate
+        ..., description="Current educational stage", examples=[AcademicLevelEnum.undergraduate]
     )
     Most_Used_Platform: PlatformEnum = Field(
-        ..., description="Primary social media platform used", example=PlatformEnum.instagram
+        ..., description="Primary social media platform used", examples=[PlatformEnum.instagram]
     )
     Purpose_Of_Use: PurposeOfUseEnum = Field(
-        ..., description="Main purpose of using social media", example=PurposeOfUseEnum.entertainment
+        ..., description="Main purpose of using social media", examples=[PurposeOfUseEnum.entertainment]
     )
     Avg_Daily_Usage_Hours: float = Field(
-        ..., ge=0.0, le=24.0, description="Average daily social media screen time in hours", example=4.6
+        ..., ge=0.0, le=24.0, description="Average daily social media screen time in hours", examples=[4.6]
     )
     Daily_Unlocks: int = Field(
-        ..., ge=0, le=1000, description="Average daily smartphone unlock count", example=166
+        ..., ge=0, le=1000, description="Average daily smartphone unlock count", examples=[166]
     )
     Study_Hours: float = Field(
-        ..., ge=0.0, le=24.0, description="Average daily academic study hours", example=4.0
+        ..., ge=0.0, le=24.0, description="Average daily academic study hours", examples=[4.0]
     )
     Physical_Activity_Hours: float = Field(
-        ..., ge=0.0, le=24.0, description="Average daily physical exercise / sports in hours", example=1.8
+        ..., ge=0.0, le=24.0, description="Average daily physical exercise / sports in hours", examples=[1.8]
     )
     Sleep_Hours_Per_Night: float = Field(
-        ..., ge=0.0, le=24.0, description="Average sleep duration per night in hours", example=6.7
+        ..., ge=0.0, le=24.0, description="Average sleep duration per night in hours", examples=[6.7]
     )
     Stress_Level: StressLevelEnum = Field(
-        ..., description="Perceived academic/personal stress level", example=StressLevelEnum.medium
+        ..., description="Perceived academic/personal stress level", examples=[StressLevelEnum.medium]
     )
 
     model_config = {
         "json_schema_extra": {
-            "example": {
+            "examples": [{
                 "Age": 21,
                 "Gender": "Male",
                 "Country": "Canada",
@@ -174,19 +232,19 @@ class StudentInput(BaseModel):
                 "Physical_Activity_Hours": 1.8,
                 "Sleep_Hours_Per_Night": 6.7,
                 "Stress_Level": "Medium",
-            }
+            }]
         }
     }
 
 
 class PredictionResult(BaseModel):
     predicted_mental_health_score: float = Field(
-        ..., description="Predicted Mental Health Score (scale typically 1 to 10)", example=7.0
+        ..., description="Predicted Mental Health Score (scale typically 1 to 10)", examples=[7.0]
     )
     risk_category: str = Field(
-        ..., description="Interpreted category based on predicted score", example="Good / Moderate"
+        ..., description="Interpreted category based on predicted score", examples=["Good / Moderate"]
     )
-    status: str = Field(default="success", example="success")
+    status: str = Field(default="success", examples=["success"])
 
 
 class BatchPredictionRequest(BaseModel):
@@ -194,7 +252,7 @@ class BatchPredictionRequest(BaseModel):
 
 
 class BatchPredictionResponse(BaseModel):
-    total: int = Field(..., example=1)
+    total: int = Field(..., examples=[1])
     predictions: List[PredictionResult]
 
 
@@ -215,7 +273,8 @@ def prepare_features(student: StudentInput) -> dict:
     """Formats student input into the exact feature DataFrame structure expected by the pipeline."""
     # Country grouping logic matching the trained model pipeline
     country_val = student.Country.strip()
-    grouped_country = country_val if country_val in TOP_COUNTRIES else "Other"
+    supported_countries = set(MODEL_CATEGORIES.get("Grouped_country", []))
+    grouped_country = country_val if country_val in supported_countries else "Other"
 
     # Ensure non-negative physical activity matching EDA preprocessing
     physical_activity = max(0.0, float(student.Physical_Activity_Hours))
@@ -243,13 +302,13 @@ def root():
     return FileResponse(INDEX_FILE, media_type="text/html")
 
 
-@app.get("/style (1).css", include_in_schema=False)
+@app.get("/style.css", include_in_schema=False)
 def frontend_stylesheet():
     """Serve the stylesheet linked from the existing frontend."""
     return FileResponse(STYLE_FILE, media_type="text/css")
 
 
-@app.get("/script (1).js", include_in_schema=False)
+@app.get("/script.js", include_in_schema=False)
 def frontend_script():
     """Serve the JavaScript linked from the existing frontend."""
     return FileResponse(SCRIPT_FILE, media_type="application/javascript")
@@ -268,14 +327,16 @@ def health_check():
 @app.get("/model-info", tags=["Model"])
 def model_info():
     """Returns metadata regarding features, required format, and model state."""
+    categories = MODEL_CATEGORIES if model is not None else {}
     return {
         "model_type": "RandomForestRegressor Pipeline with Skewed, Plain Numeric, Ordinal, and Nominal transformers",
         "target": "Mental_Health_Score",
-        "top_countries_supported": sorted(list(TOP_COUNTRIES)),
-        "stress_levels": [e.value for e in StressLevelEnum],
-        "academic_levels": [e.value for e in AcademicLevelEnum],
-        "platforms": [e.value for e in PlatformEnum],
-        "purposes": [e.value for e in PurposeOfUseEnum],
+        "top_countries_supported": categories.get("Grouped_country", []),
+        "stress_levels": categories.get("Stress_Level", []),
+        "genders": categories.get("Gender", []),
+        "academic_levels": categories.get("Academic_Level", []),
+        "platforms": categories.get("Most_Used_Platform", []),
+        "purposes": categories.get("Purpose_Of_Use", []),
     }
 
 

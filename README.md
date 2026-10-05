@@ -24,14 +24,16 @@ The server starts at `http://127.0.0.1:8000`.
 
 ### 3. Open the Frontend
 
-Open `login.html` in your browser (or serve this folder with a local static-file server). Sign in with the demo account:
+Open the app at `http://127.0.0.1:8000/` while the FastAPI server is running. Sign in with the demo account:
 
 - **Email:** `demo@example.com`
 - **Password:** `demo123`
 
 You can also click **Use demo account** on the sign-in page to fill in these values and open the predictor.
 
-The login is a client-side demo gate only; it does not authenticate real email accounts. The predictor page sends requests to `http://127.0.0.1:8000/predict`, so keep the FastAPI server running while using the frontend.
+The login is a client-side demo gate only; it does not authenticate real email accounts. The predictor page sends requests to `/predict` on the same server.
+
+For a separate production frontend, set `CORS_ALLOWED_ORIGINS` to a comma-separated list of explicit frontend origins before starting the API. Local development using a static server on port 5500 is allowed by default.
 
 ---
 
