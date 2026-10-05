@@ -2,7 +2,7 @@
    ML PREDICTION (unchanged): talks to FastAPI POST /predict
    ========================================================== */
 
-const API_URL = "http://127.0.0.1:8000/predict";
+const API_URL = "https://project1-j2dt.onrender.com";
 
 const form = document.getElementById("predict-form");
 const submitBtn = document.getElementById("submit-btn");
