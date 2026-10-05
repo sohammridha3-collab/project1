@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 # Configure logging
@@ -19,7 +20,11 @@ logging.basicConfig(
 logger = logging.getLogger("mental_health_api")
 
 # Model path configuration
-MODEL_FILE = os.path.join(os.path.dirname(__file__), "Mental_Health_Model.pkl")
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_FILE = os.path.join(PROJECT_DIR, "Mental_Health_Model.pkl")
+INDEX_FILE = os.path.join(PROJECT_DIR, "index (1).html")
+STYLE_FILE = os.path.join(PROJECT_DIR, "style (1).css")
+SCRIPT_FILE = os.path.join(PROJECT_DIR, "script (1).js")
 model = None
 
 # Top 10 countries as extracted during model training
@@ -234,13 +239,20 @@ def prepare_features(student: StudentInput) -> dict:
 # --- API Routes ---
 @app.get("/", tags=["General"])
 def root():
-    """Root endpoint providing service status and links to docs."""
-    return {
-        "message": "Student Social Media & Mental Health Impact Prediction API",
-        "documentation": "/docs",
-        "health": "/health",
-        "model_loaded": model is not None,
-    }
+    """Serve the existing frontend application."""
+    return FileResponse(INDEX_FILE, media_type="text/html")
+
+
+@app.get("/style (1).css", include_in_schema=False)
+def frontend_stylesheet():
+    """Serve the stylesheet linked from the existing frontend."""
+    return FileResponse(STYLE_FILE, media_type="text/css")
+
+
+@app.get("/script (1).js", include_in_schema=False)
+def frontend_script():
+    """Serve the JavaScript linked from the existing frontend."""
+    return FileResponse(SCRIPT_FILE, media_type="application/javascript")
 
 
 @app.get("/health", tags=["General"])
